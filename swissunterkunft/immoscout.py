@@ -1,5 +1,6 @@
 # packages
 from gc import callbacks
+import time
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from scrapy.selector import Selector
@@ -64,67 +65,44 @@ class Immoscout(scrapy.Spider):
                 urllib.parse.urlencode(self.params)
 
             # crawl given city
-            yield scrapy.Request(url=url, headers=self.headers, meta={'city': count, 'totalNbCities': len(cities)}, callback=self.parse)
+            yield scrapy.Request(url=url, headers=self.headers, meta={'city': count, 'totalNbCities': len(cities)}, callback=self.parse, errback=self.parse)
 
             # increment cities count
             count += 1
 
     # parse content
     def parse(self, res):
-        '''
-        # store HTML response to debug selectors
-        with open('res.html', 'w') as f:
-            f.write(res.text)
-        '''
-        '''
-        # local HTML content
-        content = ''
-
-        # load HTML response from local file to debug selectors
-        with open('res.html', 'r') as f:
-            for line in f.read():
-                content += line
-
-        # init scrapy selector
-        res = Selector(text=content)
-        '''
         # extract data from meta container
         count = res.meta.get('city')
         totalNbCities = res.meta.get('totalNbCities')
 
         # loop over property cards
         for card in res.css('div[class="Body-jQnOud bjiWLb"]'):
-            # most of the time, input = X rooms, Y m2, CHF Z (but not always, we need to treat the special cases)
+            # most of the time, the "details input string" = X rooms, Y m2, CHF Z (but not always, so we need to treat the special cases)
+            # get the base input string
+            detailsString = ''.join(card.css(
+                'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall())
+
             # check if price is in the string
-            if ''.join(card.css(
-                    'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall()).find(".\u2014") != -1:
-                try:
-                    priceParsed = (''.join(card.css(
-                        'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall())).split("CHF ", 1)[1].split(".\u2014", 1)[0]
-                except:
-                    priceParsed = '-1'
+            if detailsString.find(".\u2014") != -1:
+                priceParsed = detailsString.split(
+                    "CHF ", 1)[1].split(".\u2014", 1)[0]
             else:
                 priceParsed = '-1'
 
             # check if number of rooms is in the string
-            if ''.join(card.css(
-                    'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall()).find(" room") != -1:
-                try:
-                    nbRoomsParsed = (''.join(card.css(
-                        'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall())).split(" room", 1)[0]
-                except:
-                    nbRoomsParsed = '-1'
+            if detailsString.find(" room") != -1:
+                nbRoomsParsed = detailsString.split(" room", 1)[0]
             else:
                 nbRoomsParsed = '-1'
 
             # check if surface is in the string
-            if ''.join(card.css(
-                    'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall()).find(" m\u00b2") != -1:
-                try:
-                    surfaceParsed = (''.join(card.css(
-                        'h3[class="Box-cYFBPY edGgnU Heading-daBLVV dOtgYu"] *::text').getall())).split(" m\u00b2", 1)[0].split(", ", 1)[1]
-                except:
-                    surfaceParsed = '-1'
+            if detailsString.find(" m\u00b2") != -1:
+                if detailsString.find(" room") != -1:
+                    surfaceParsed = detailsString.split(
+                        " m\u00b2", 1)[0].split(", ", 1)[1]
+                else:
+                    surfaceParsed = detailsString.split(" m\u00b2", 1)[0]
             else:
                 surfaceParsed = '-1'
 
@@ -136,26 +114,21 @@ class Immoscout(scrapy.Spider):
                 'surface': surfaceParsed,
                 'address': card.css('span[class="AddressLine__TextStyled-eaUAMD iBNjyG"]::text').getall()[0]
             }
-            # print extracted data
-            # print(json.dumps(features, indent=2))
 
             # store output to CSV
             yield features
 
-        # crawl pages if available
+        # crawl next pages if available
         try:
-            try:
-                # extract number of total pages
-                if len([int(page) for page in res.css('div[class="Box-cYFBPY Flex-feqWzG dpEUFz dCDRxm"] *::text').getall() if page.isdigit()]) > 1:
-                    # increment current page by 1
-                    self.current_page += 1
-                    total_pages = max([int(page) for page in res.css(
-                        'div[class="Box-cYFBPY Flex-feqWzG dpEUFz dCDRxm"] *::text').getall() if page.isdigit()])
-                else:
-                    self.current_page = 999999
-            except:
+            # extract number of total pages
+            if len([int(page) for page in res.css('div[class="Box-cYFBPY Flex-feqWzG dpEUFz dCDRxm"] *::text').getall() if page.isdigit()]) > 1:
+                # increment current page by 1
+                self.current_page += 1
+                total_pages = max([int(page) for page in res.css(
+                    'div[class="Box-cYFBPY Flex-feqWzG dpEUFz dCDRxm"] *::text').getall() if page.isdigit()])
+            else:
                 total_pages = 1
-                self.current_page = 999999
+                self.current_page = 9999
 
             # increment page number string query parameter
             self.params['pn'] = self.current_page
@@ -173,9 +146,7 @@ class Immoscout(scrapy.Spider):
             # crawl next page URL if available
             if self.current_page <= total_pages:
                 # crawl next page recursively
-                yield scrapy.Request(url=next_page, headers=self.headers, meta={'city': count, 'totalNbCities': totalNbCities}, callback=self.parse)
-            else:
-                self.current_page = 0
+                yield scrapy.Request(url=next_page, headers=self.headers, meta={'city': count, 'totalNbCities': totalNbCities}, callback=self.parse, errback=self.parse)
 
         except Exception as e:
             print(e)
